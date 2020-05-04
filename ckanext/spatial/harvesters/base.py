@@ -397,7 +397,6 @@ class SpatialHarvester(HarvesterBase):
                         })
                     package_dict['resources'].append(resource)
 
-
         # Add default_extras from config
         default_extras = self.source_config.get('default_extras',{})
         if default_extras:
@@ -422,6 +421,9 @@ class SpatialHarvester(HarvesterBase):
                 extras_as_dict.append({'key': key, 'value': value})
 
         package_dict['extras'] = extras_as_dict
+
+        # convert to datacite schema
+        package_dict = self._convert_to_datacite(package_dict)
 
         return package_dict
 
@@ -658,8 +660,28 @@ class SpatialHarvester(HarvesterBase):
                     self._save_object_error('Validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
                     return False
 
+        from cgi import FieldStorage
+        from io import StringIO
+        # create a new resource with the metadata in xml form
+        xml_resource = {}
+        xml_resource_name = package_dict['name'] + '_metadata.xml'
+        headers = {u'content-disposition': u'multipart/form-data; name="{}"; filename="{}"'.format('upload', xml_resource_name),
+               u'content-length': len(harvest_object.content),
+               u'content-type': 'text/xml'}
+        environ = {'REQUEST_METHOD': 'POST'}
+        fp = StringIO(harvest_object.content)
+        metadataFS = FieldStorage(fp=fp, headers=headers, environ=environ)
+        xml_resource.update(
+                        {
+                            'package_id': harvest_object.package_id,
+                            'format': 'xml',
+                            'name': xml_resource_name,
+                            'description': 'Metadata of the imported dataset',
+                            'upload':  metadataFS
+                        })
+        logic.get_action('resource_create')(context, xml_resource)
         model.Session.commit()
-
+        
         return True
     ##
 
@@ -829,3 +851,31 @@ class SpatialHarvester(HarvesterBase):
                 self._save_object_error(error[0], harvest_object, 'Validation', line=error[1])
 
         return valid, profile, errors
+
+    def _convert_to_datacite(self, pkg_dict):
+
+
+        pkg_dict['dataset_type'] = 'datacite'
+        pkg_dict['type'] = 'dataset'
+        for extra in pkg_dict['extras'][:]:
+            if not extra['value']: 
+                pkg_dict['extras'].remove(extra)
+            elif extra['key'] == 'metadata-date':
+                pkg_dict['date'] = extra['value']
+                pkg_dict['extras'].remove(extra)
+            elif extra['key'] == 'contact-email':
+                pkg_dict['datacite.contact_email'] = extra['value']
+                pkg_dict['extras'].remove(extra)
+            elif extra['key'] == 'metadata-language':
+                pkg_dict['datacite.languagecode'] = extra['value']
+                pkg_dict['extras'].remove(extra) 
+            elif extra['key'] == 'spatial':
+                pkg_dict['spatial'] = extra['value']
+                pkg_dict['extras'].remove(extra) 
+            elif extra['key'] == 'responsible-party':
+                resp_party = json.loads(extra['value'])[0]
+                pkg_dict['datacite.creator.creator_name'] = resp_party['name']
+                pkg_dict['extras'].remove(extra) 
+        pkg_dict['datacite.closed_subject'] = ['Physical Geography and Environmental Geoscience']
+        pkg_dict['closed_tag'] = ['Physical Geography and Environmental Geoscience']
+        return pkg_dict
